@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestSchemaType(t *testing.T) {
 	tests := []struct {
@@ -55,6 +59,76 @@ func TestSchemaType(t *testing.T) {
 				t.Fatalf("isNullable() = %v, want %v", isNullable(tt.schema), tt.wantNullable)
 			}
 		})
+	}
+}
+
+func TestGenStructOmitsUnsetNestedObject(t *testing.T) {
+	prev := schemaByOASName
+	t.Cleanup(func() { schemaByOASName = prev })
+	schemaByOASName = map[string]*schemaInfo{
+		"TravelRuleManualEntry": {goName: "TravelRuleManualEntry", kind: "struct"},
+		"OrderSide":             {goName: "OrderSide", kind: "enum"},
+	}
+
+	info := &schemaInfo{
+		goName: "TravelRuleInfo",
+		kind:   "struct",
+		props: map[string]map[string]any{
+			"beneficiary_is_self_hosted": {"type": "boolean"},
+			"beneficiary_manual_entry":   {"$ref": "#/components/schemas/TravelRuleManualEntry"},
+			"side":                       {"$ref": "#/components/schemas/OrderSide"},
+			"symbol":                     {"type": "string"},
+		},
+		required: map[string]bool{"symbol": true},
+	}
+	var buf bytes.Buffer
+	genStruct(&buf, info)
+	got := buf.String()
+
+	if !strings.Contains(got, "BeneficiaryManualEntry *TravelRuleManualEntry `json:\"beneficiary_manual_entry,omitempty\"`") {
+		t.Fatalf("optional nested object should be a nilable pointer:\n%s", got)
+	}
+	if strings.Contains(got, "beneficiary_is_self_hosted,omitempty,omitzero") ||
+		strings.Contains(got, "side,omitempty,omitzero") ||
+		strings.Contains(got, "symbol,omitempty,omitzero") ||
+		strings.Contains(got, "*bool") ||
+		strings.Contains(got, "*OrderSide") ||
+		strings.Contains(got, "*string") {
+		t.Fatalf("pointer applied to a non-struct field:\n%s", got)
+	}
+}
+
+func TestResolveGoTypeUnwrapsSingleAllOf(t *testing.T) {
+	prev := schemaByOASName
+	t.Cleanup(func() { schemaByOASName = prev })
+	schemaByOASName = map[string]*schemaInfo{
+		"TravelRuleInfo": {goName: "TravelRuleInfo", kind: "struct"},
+	}
+	schema := map[string]any{
+		"allOf": []any{
+			map[string]any{"$ref": "#/components/schemas/TravelRuleInfo"},
+		},
+		"description": "Travel rule information associated with the whitelisted address.",
+	}
+	if got := resolveGoType(schema); got != "TravelRuleInfo" {
+		t.Fatalf("resolveGoType() = %q, want TravelRuleInfo", got)
+	}
+	if !isStructSchema(schema) {
+		t.Fatal("single allOf $ref to a struct should be a struct schema")
+	}
+	comp := map[string]any{
+		"TravelRuleInfo": map[string]any{"type": "object"},
+	}
+	if got := oasFieldType(schema, comp); got != "object" {
+		t.Fatalf("oasFieldType() = %q, want object", got)
+	}
+
+	multi := map[string]any{"allOf": []any{
+		map[string]any{"$ref": "#/components/schemas/A"},
+		map[string]any{"$ref": "#/components/schemas/B"},
+	}}
+	if got := resolveGoType(multi); got != "any" {
+		t.Fatalf("multi allOf resolveGoType() = %q, want any", got)
 	}
 }
 
